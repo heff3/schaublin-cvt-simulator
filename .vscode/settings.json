@@ -3,6 +3,7 @@
         "command": true,
         "true": true,
         "pytest": true,
-        "uv": true
+        "uv": true,
+        "docker run": true
     }
 }

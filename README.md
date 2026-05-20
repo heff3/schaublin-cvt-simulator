@@ -42,6 +42,9 @@ At this point the harness intentionally models the current behavior, including t
   - Simulates motor response, CVT ratio movement, backgear multiplication, and simple fault injection.
 - `spindle_simulation.py`
   - Coupled controller-plus-plant runner for multi-step scenarios.
+- `spindle_realtime_simulation.py`
+  - Terminal-based real-time interactive simulation.
+  - Runs the same controller and plant models with wall-clock pacing, live controls, rolling traces, and selected runtime parameter edits.
 - `tests/`
   - Focused regression tests for the supervisor model, plant model, and coupled scenarios.
 
@@ -72,6 +75,40 @@ uv run --group dev pytest -q
 ```
 
 That command is the current reference check for the Python harness.
+
+### Run the interactive real-time simulation
+
+From this directory:
+
+```bash
+uv run python spindle_realtime_simulation.py
+```
+
+Useful options:
+
+```bash
+uv run python spindle_realtime_simulation.py --dt 0.001 --ui-hz 20 --history 5000 --max-steps-per-update 200
+```
+
+Current key bindings:
+
+- `q`: quit
+- `space`: toggle spindle enable
+- `p`: pause or resume wall-clock execution
+- `n`: single-step one simulation tick while paused
+- `j` / `k`: decrease or increase commanded spindle speed by `10 rpm`
+- `J` / `K`: decrease or increase commanded spindle speed by `100 rpm`
+- `b`: pulse the backgear button
+- `i` / `d`: pulse CVT increase or decrease
+- `r`: toggle reverse command
+- `x`: toggle brake command
+- `v`: toggle CVT inversion
+- `tab`: cycle through live-editable parameters
+- `+` / `-`: raise or lower the selected parameter
+- `0`: reset controller and plant state while keeping the current tuned parameters
+- `!`: reset both state and parameters back to their defaults
+
+The first version keeps the UI dependency-free by using the Python standard library `curses` module. It stores a bounded rolling sample history, redraws the terminal at a lower rate than the simulation tick, and drops excess catch-up steps if the terminal loop falls too far behind. The selected live tunables are `KP`, `KI`, `STARTUP_HZ`, `CVT_TARGET_HZ`, `MOTOR_TAU`, and `ENCODER_NOISE`.
 
 ## Example Scenario
 
