@@ -1,0 +1,8 @@
+{
+    "chat.tools.terminal.autoApprove": {
+        "command": true,
+        "true": true,
+        "pytest": true,
+        "uv": true
+    }
+}
