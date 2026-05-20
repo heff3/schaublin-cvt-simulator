@@ -1,0 +1,180 @@
+# =============================================================================
+#  spindle.hal  Schaublin 125-CNC
+#
+#  Supervisor owns: VFD, CVT solenoids, backgear solenoids (direct),
+#                   brake passthrough, fault for gmoccapy message.
+#  ClassicLadder: backgear rungs DELETED from schaublin.clp
+#                 (collet/tailstock/turret inhibit unchanged)
+#
+#  or2.0 and or2.1 no longer needed for backgear - remove from main HAL
+#  if not used elsewhere.
+# =============================================================================
+
+loadrt spindle_supervisor names=supervisor
+loadrt scale count=2
+
+addf supervisor   servo-thread
+addf scale.0      servo-thread
+addf scale.1      servo-thread
+
+# ---------------------------------------------------------------------------
+#  Encoder 00 - Spindle
+# ---------------------------------------------------------------------------
+setp    [HMOT](CARD0).encoder.00.counter-mode       0
+setp    [HMOT](CARD0).encoder.00.filter             1
+setp    [HMOT](CARD0).encoder.00.index-invert       0
+setp    [HMOT](CARD0).encoder.00.index-mask         0
+setp    [HMOT](CARD0).encoder.00.index-mask-invert  0
+setp    [HMOT](CARD0).encoder.00.scale              [SPINDLE_0]ENCODER_SCALE
+
+net spindle-revs         <= [HMOT](CARD0).encoder.00.position
+net spindle-vel-fb-rps   <= [HMOT](CARD0).encoder.00.velocity
+net spindle-index-enable <=> [HMOT](CARD0).encoder.00.index-enable
+
+setp scale.1.gain 60.0
+net spindle-vel-fb-rps  => scale.1.in
+net spindle-vel-fb-rpm  <= scale.1.out
+
+# ---------------------------------------------------------------------------
+#  LinuxCNC spindle motion signals
+# ---------------------------------------------------------------------------
+net spindle-vel-cmd-rps     <= spindle.0.speed-out-rps
+net spindle-vel-cmd-rps-abs <= spindle.0.speed-out-rps-abs
+net spindle-vel-cmd-rpm     <= spindle.0.speed-out
+net spindle-vel-cmd-rpm-abs <= spindle.0.speed-out-abs
+
+net spindle-enable          <= spindle.0.on
+net spindle-direction       <= spindle.0.reverse
+net spindle-vfd-brake       <= spindle.0.brake
+
+net spindle-revs            => spindle.0.revs
+net spindle-vel-fb-rps      => spindle.0.speed-in
+net spindle-index-enable   <=> spindle.0.index-enable
+
+# ---------------------------------------------------------------------------
+#  Supervisor INI parameters
+# ---------------------------------------------------------------------------
+setp supervisor.vfd-min-hz          [SPINDLE_0]VFD_MIN_HZ
+setp supervisor.vfd-max-hz          [SPINDLE_0]VFD_MAX_HZ
+setp supervisor.motor-rpm-per-hz    [SPINDLE_0]MOTOR_RPM_PER_HZ
+setp supervisor.startup-hz          [SPINDLE_0]STARTUP_HZ
+setp supervisor.ol-stable-time      [SPINDLE_0]OL_STABLE_TIME
+setp supervisor.ol-stable-band      [SPINDLE_0]OL_STABLE_BAND
+setp supervisor.ol-max-time         [SPINDLE_0]OL_MAX_TIME
+setp supervisor.max-spindle-rpm     [SPINDLE_0]MAX_SPINDLE_RPM
+
+setp supervisor.ratio-first         [SPINDLE_0]RATIO_FIRST
+setp supervisor.ratio-alpha         [SPINDLE_0]RATIO_ALPHA
+setp supervisor.ratio-freeze-time   [SPINDLE_0]RATIO_FREEZE_TIME
+setp supervisor.ratio-gate-time     [SPINDLE_0]RATIO_GATE_TIME
+setp supervisor.ratio-min           [SPINDLE_0]RATIO_MIN
+setp supervisor.ratio-max           [SPINDLE_0]RATIO_MAX
+
+setp supervisor.kp                  [SPINDLE_0]KP
+setp supervisor.ki                  [SPINDLE_0]KI
+setp supervisor.deadband-rpm        [SPINDLE_0]DEADBAND_RPM
+setp supervisor.max-i-error         [SPINDLE_0]MAX_I_ERROR
+
+setp supervisor.cvt-target-hz       [SPINDLE_0]CVT_TARGET_HZ
+setp supervisor.cvt-hz-band         [SPINDLE_0]CVT_HZ_BAND
+setp supervisor.cvt-hz-band-bg      [SPINDLE_0]CVT_HZ_BAND_BG
+setp supervisor.cvt-hz-per-sec      [SPINDLE_0]CVT_HZ_PER_SEC
+setp supervisor.cvt-pulse-min       [SPINDLE_0]CVT_PULSE_MIN
+setp supervisor.cvt-pulse-max       [SPINDLE_0]CVT_PULSE_MAX
+setp supervisor.cvt-settle-time     [SPINDLE_0]CVT_SETTLE_TIME
+
+setp supervisor.backgear-threshold  [SPINDLE_0]BACKGEAR_THRESHOLD
+setp supervisor.backgear-ratio-min  [SPINDLE_0]BACKGEAR_RATIO_MIN
+setp supervisor.bg-engage-time      [SPINDLE_0]BG_ENGAGE_TIME
+setp supervisor.bg-spin-threshold   [SPINDLE_0]BG_SPIN_THRESHOLD
+
+setp supervisor.cvt-invert          0
+
+# ---------------------------------------------------------------------------
+#  Gear init: sourced from backgear_state.hal written by shutdown script.
+#  If that file does not exist yet, gear_init defaults to 0 (high gear).
+# ---------------------------------------------------------------------------
+# (backgear_state.hal contains: setp supervisor.gear-init 0  or  1)
+
+# ---------------------------------------------------------------------------
+#  Supervisor signal connections
+# ---------------------------------------------------------------------------
+net spindle-vel-cmd-rpm-abs  => supervisor.cmd-rpm
+net spindle-vel-fb-rpm       => supervisor.fb-rpm
+net spindle-enable           => supervisor.enable
+net spindle-vfd-brake        => supervisor.brake
+net spindle-direction        => supervisor.spindle-reverse
+
+# Panel buttons: matrix keys connected in control_panel.hal
+# Backgear button feeds supervisor only (CL backgear rungs deleted)
+# CVT buttons feed supervisor and CL in-03/04 for display only
+
+# Fault -> gmoccapy message (add to custom_postgui.hal:)
+#   net sv-fault => gmoccapy.messages.backgear-fault
+net sv-fault                 <= supervisor.fault
+
+# ---------------------------------------------------------------------------
+#  Backgear solenoids: direct from supervisor, no or2, no ClassicLadder
+# ---------------------------------------------------------------------------
+net sv-bg-on                 <= supervisor.backgear-on
+net sv-bg-on                 => [HMOT](CARD0).7i84.0.0.output-13
+
+net sv-bg-off                <= supervisor.backgear-off
+net sv-bg-off                => [HMOT](CARD0).7i84.0.0.output-12
+
+# ---------------------------------------------------------------------------
+#  CVT solenoids
+# ---------------------------------------------------------------------------
+net sv-cvt-increase          <= supervisor.cvt-increase
+net sv-cvt-increase          => [HMOT](CARD0).7i84.0.3.output-01
+
+net sv-cvt-decrease          <= supervisor.cvt-decrease
+net sv-cvt-decrease          => [HMOT](CARD0).7i84.0.3.output-05
+
+# ---------------------------------------------------------------------------
+#  Motor command -> scale -> analogout0
+# ---------------------------------------------------------------------------
+setp scale.0.gain               [SPINDLE_0]ANALOG_SCALE_GAIN
+net sv-motor-cmd-rpm         <= supervisor.motor-cmd-rpm
+net sv-motor-cmd-rpm         => scale.0.in
+net spindle-analog-volts     <= scale.0.out
+net spindle-analog-volts     => [HMOT](CARD0).7i83.0.1.analogout0
+
+# ---------------------------------------------------------------------------
+#  VFD enable, direction, brake
+# ---------------------------------------------------------------------------
+net spindle-enable           => classicladder.0.in-07
+net spindle-enabled          <= classicladder.0.out-08
+net spindle-enabled          => [HMOT](CARD0).7i83.0.1.analogena0
+
+net spindle-direction        => [HMOT](CARD0).7i84.0.3.output-07
+
+net sv-vfd-brake             <= supervisor.vfd-brake
+net sv-vfd-brake             => [HMOT](CARD0).7i84.0.0.output-03
+
+# ---------------------------------------------------------------------------
+#  At-speed feedback
+# ---------------------------------------------------------------------------
+net spindle-at-speed         <= [HMOT](CARD0).7i84.0.0.input-19
+net spindle-at-speed         => spindle.0.at-speed
+
+# ---------------------------------------------------------------------------
+#  Debug nets (halscope / halshow)
+#  supervisor.backgear-state    TRUE = backgear engaged
+#  supervisor.ratio-out         live drivetrain ratio
+#  supervisor.motor-hz-out      motor command Hz
+#  supervisor.dbg-motor-hz-err  motor_hz - cvt_target_hz
+#  supervisor.dbg-ratio-freeze  seconds remaining in ratio freeze
+#  supervisor.dbg-cvt-wait      seconds remaining in CVT gate
+#  supervisor.dbg-cvt-pulse-calc calculated CVT pulse duration
+#  supervisor.dbg-fb-rpm-abs    absolute fb_rpm used internally
+#  supervisor.active-kp         scheduled P gain
+#  supervisor.active-ki         scheduled I gain
+#  supervisor.dbg-error-rpm     speed error before deadband
+#  supervisor.dbg-integrator    integrator state
+#  supervisor.dbg-ol-stable     seconds fb_rpm stable in open loop
+#  supervisor.dbg-state         0=idle 1=check_gear 2=ol 3=cl 4=fault
+#  supervisor.closed-loop       TRUE in closed-loop
+#  supervisor.fault             TRUE in fault state
+# ---------------------------------------------------------------------------
+

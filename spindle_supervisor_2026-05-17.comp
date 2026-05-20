@@ -1,0 +1,513 @@
+component spindle_supervisor """Spindle supervisor for Schaublin 125-CNC.
+
+Drivetrain: VFD (10-70 Hz, 30 RPM/Hz) -> 2-speed gearbox (1:1 or 6.5:1)
+            -> CVT (variable, no feedback) -> spindle encoder.
+
+State machine:
+  0 IDLE        : spindle off
+  1 CHECK_GEAR  : shift gearbox, hold solenoid, wait bg_engage_time
+  2 OPEN_LOOP   : run at startup_hz, measure ratio, verify backgear
+  3 CLOSED_LOOP : PI control with ratio-scheduled gains, CVT auto-targeting
+  4 FAULT       : backgear failed to engage, clears on M5
+
+Backgear ownership:
+  Comp drives backgear_on / backgear_off hardware pins directly.
+  No ClassicLadder involvement for backgear.
+  Manual panel button toggles gear when spindle is stopped and not turning.
+  Auto gear selection on M3 based on backgear_threshold.
+  State saved to file on shutdown and restored via gear_init pin on startup.
+
+Ratio learning:
+  Frozen for ratio_freeze_time seconds after every CVT pulse.
+  Only updates at steady state (not saturated, not mid-pulse).
+  No fast-alpha: corrupts estimate during transients.
+
+CVT pulse duration:
+  Calculated as abs(unclamped_hz_err) / cvt_hz_per_sec.
+  Unclamped hz uses full ratio*cmd/motor_rpm_per_hz so VFD saturation
+  does not hide the true CVT travel needed.
+  Clamped between cvt_pulse_min and cvt_pulse_max.
+""";
+
+include <math.h>;
+
+/* â”€â”€ Inputs â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
+pin in  float  cmd_rpm             "Commanded spindle RPM (speed-out-abs)";
+pin in  float  fb_rpm              "Spindle feedback RPM (signed, abs taken internally)";
+pin in  bit    enable              "Spindle on (spindle.0.on)";
+pin in  bit    brake               "VFD brake (spindle.0.brake)";
+pin in  bit    spindle_reverse     "Spindle direction (spindle.0.reverse) TRUE=M4";
+
+pin in  bit    panel_backgear_btn  "Panel backgear toggle button (matrix r4c4)";
+pin in  bit    panel_cvt_increase  "Panel CVT+ button (matrix r5c4)";
+pin in  bit    panel_cvt_decrease  "Panel CVT- button (matrix r3c4)";
+pin in  bit    cvt_invert          "Set TRUE to swap CVT increase/decrease direction";
+
+/* gear_init: read once on first call to restore saved state.
+   Set by startup HAL sourcing backgear_state.hal after shutdown. */
+pin in  bit    gear_init           "Initial backgear state from saved file (0=high 1=backgear)";
+
+/* â”€â”€ INI parameters â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
+pin in  float  vfd_min_hz          "VFD minimum Hz (10)";
+pin in  float  vfd_max_hz          "VFD maximum Hz (70)";
+pin in  float  motor_rpm_per_hz    "Motor RPM/Hz (30)";
+pin in  float  startup_hz          "Open-loop Hz (10)";
+pin in  float  ol_stable_time      "Seconds fb_rpm stable before CL switch (1.0)";
+pin in  float  ol_max_time         "Max open-loop seconds (3.0)";
+pin in  float  ol_stable_band      "Max RPM/s change to count as stable (5.0)";
+pin in  float  max_spindle_rpm     "Hard spindle RPM ceiling (3000)";
+
+pin in  float  ratio_first         "Initial ratio estimate (1.3)";
+pin in  float  ratio_alpha         "Ratio LP filter coeff at steady state (0.005)";
+pin in  float  ratio_freeze_time   "Seconds to freeze ratio after CVT pulse (4.0)";
+pin in  float  ratio_gate_time     "Seconds to block next auto CVT after pulse (7.0)";
+pin in  float  ratio_min           "Ratio sanity min (0.4)";
+pin in  float  ratio_max           "Ratio sanity max (80.0)";
+
+pin in  float  kp                  "Base P gain (divided by ratio each cycle)";
+pin in  float  ki                  "Base I gain (divided by ratio each cycle)";
+pin in  float  deadband_rpm        "PI deadband RPM (15)";
+pin in  float  max_i_error         "Max integrator correction RPM (150)";
+
+pin in  float  cvt_target_hz       "Target motor Hz (50.0)";
+pin in  float  cvt_hz_band         "Hz band in high gear (5.0)";
+pin in  float  cvt_hz_band_bg      "Hz band in backgear (10.0)";
+pin in  float  cvt_hz_per_sec      "Hz change per second of CVT runtime (12.0)";
+pin in  float  cvt_pulse_min       "Min CVT pulse seconds (0.3)";
+pin in  float  cvt_pulse_max       "Max CVT pulse seconds (3.5)";
+pin in  float  cvt_settle_time     "Seconds after CL entry before first auto CVT (8.0)";
+
+pin in  float  backgear_threshold  "Auto-select backgear at or below this RPM (400)";
+pin in  float  backgear_ratio_min  "Min ratio to confirm backgear engaged (3.0)";
+pin in  float  bg_engage_time      "Seconds to hold solenoid after gear command (2.0)";
+pin in  float  bg_spin_threshold   "Max fb_rpm to allow manual gear change (20.0)";
+
+/* â”€â”€ Outputs â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
+pin out float  motor_cmd_rpm       "Motor RPM -> scale -> analogout0";
+pin out bit    vfd_brake           "Brake passthrough";
+
+/* Backgear solenoids: driven directly, no ClassicLadder */
+pin out bit    backgear_on         "Engage backgear solenoid -> hardware output-12";
+pin out bit    backgear_off        "Disengage backgear solenoid -> hardware output-13";
+
+/* CVT solenoids */
+pin out bit    cvt_increase        "CVT increase solenoid";
+pin out bit    cvt_decrease        "CVT decrease solenoid";
+
+/* Status */
+pin out bit    backgear_state      "Current gear: TRUE=backgear FALSE=high gear";
+pin out bit    fault               "Backgear failed to engage";
+pin out bit    closed_loop         "TRUE in closed-loop state";
+pin out float  ratio_out           "Current learned drivetrain ratio";
+pin out float  motor_hz_out        "Motor command Hz";
+pin out float  active_kp           "Scheduled P gain";
+pin out float  active_ki           "Scheduled I gain";
+pin out float  dbg_error_rpm       "Speed error before deadband";
+pin out float  dbg_integrator      "Integrator state";
+pin out float  dbg_cvt_wait        "Seconds until next CVT bump";
+pin out float  dbg_ol_stable       "Seconds fb_rpm stable in open loop";
+pin out float  dbg_state           "0=idle 1=check_gear 2=ol 3=cl 4=fault";
+pin out float  dbg_ratio_freeze    "Seconds remaining in ratio freeze";
+pin out float  dbg_motor_hz_err    "motor_hz minus cvt_target_hz";
+pin out float  dbg_cvt_pulse_calc  "Calculated CVT pulse duration";
+pin out float  dbg_fb_rpm_abs      "Absolute fb_rpm used internally";
+
+/* â”€â”€ Internal state â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
+variable int   state               = 0;
+variable float state_timer         = 0.0;
+variable float ol_timer            = 0.0;
+variable float ol_stable_timer     = 0.0;
+variable float prev_fb_abs         = 0.0;
+variable float fb_vel              = 0.0;
+variable float ratio_filt          = 0.0;
+variable int   ratio_init_done     = 0;
+variable int   gear_init_done      = 0;   /* read gear_init pin once */
+variable int   bg_state            = 0;   /* 0=high gear  1=backgear */
+variable int   want_backgear       = 0;   /* gear needed for this start */
+variable float integrator          = 0.0;
+variable float cvt_pulse_timer     = 0.0;
+variable float cvt_gate_timer      = 0.0;
+variable float ratio_freeze_timer  = 0.0;
+variable int   cvt_dir             = 0;
+variable int   last_panel_inc      = 0;
+variable int   panel_inc_count     = 0;   /* debounce: ms held */
+variable int   panel_dec_count     = 0;
+variable int   last_panel_dec      = 0;
+variable int   last_bg_btn         = 0;
+variable int   last_enable         = 0;
+
+function _;
+license "GPL";
+;;
+
+/* â”€â”€ Helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
+static void apply_solenoid(int engage, hal_bit_t *on_pin, hal_bit_t *off_pin) {
+    *on_pin  = engage ? 1 : 0;
+    *off_pin = engage ? 0 : 1;
+}
+
+FUNCTION(_) {
+    float max_motor_rpm = vfd_max_hz * motor_rpm_per_hz;
+    float min_motor_rpm = vfd_min_hz * motor_rpm_per_hz;
+
+    /* Brake: unconditional passthrough */
+    vfd_brake = brake;
+
+    /* Initialise ratio on very first call */
+    if (!ratio_init_done) {
+        ratio_filt      = ratio_first;
+        ratio_init_done = 1;
+    }
+
+    /* Restore gear state from gear_init pin once on first call */
+    if (!gear_init_done) {
+        bg_state       = gear_init ? 1 : 0;
+        gear_init_done = 1;
+    }
+
+    /* Absolute spindle feedback RPM */
+    float fb_abs = fb_rpm < 0.0 ? -fb_rpm : fb_rpm;
+    dbg_fb_rpm_abs = fb_abs;
+
+    /* Clamp command */
+    float cmd = cmd_rpm;
+    if (cmd > max_spindle_rpm) cmd = max_spindle_rpm;
+    if (cmd < 0.0) cmd = 0.0;
+
+    /* Filtered rate of change of fb_abs for OL stability */
+    {
+        float raw = (fb_abs - prev_fb_abs) / fperiod;
+        if (raw < 0.0) raw = -raw;
+        fb_vel       = fb_vel * 0.99 + raw * 0.01;
+        prev_fb_abs  = fb_abs;
+    }
+
+    /* Countdown timers */
+    if (ratio_freeze_timer > 0.0) ratio_freeze_timer -= fperiod;
+    if (cvt_gate_timer     > 0.0) cvt_gate_timer     -= fperiod;
+    dbg_ratio_freeze = ratio_freeze_timer;
+
+    /* Publish current gear state */
+    backgear_state = bg_state ? 1 : 0;
+
+    /* â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+       MANUAL BACKGEAR TOGGLE
+       Rising edge of panel button when:
+         - spindle not enabled (enable=FALSE)
+         - spindle not turning (fb_abs < bg_spin_threshold)
+         - state is IDLE (state=0) or FAULT (state=4 after M5)
+       Drives solenoids immediately and updates bg_state.
+       â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */
+    {
+        int bg_edge = panel_backgear_btn && !last_bg_btn;
+        last_bg_btn = panel_backgear_btn;
+
+        if (bg_edge && !enable && fb_abs < bg_spin_threshold
+                && (state == 0 || state == 4)) {
+            bg_state = bg_state ? 0 : 1;
+            apply_solenoid(bg_state, &backgear_on, &backgear_off);
+        }
+    }
+
+    int enable_edge = enable && !last_enable;
+    last_enable     = enable;
+
+    dbg_state  = (float)state;
+    ratio_out  = ratio_filt;
+
+    /* â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+       CVT PULSE STATE MACHINE - owns cvt_increase / cvt_decrease
+       Gate and freeze loaded at pulse START to immediately block
+       re-triggering on the next servo cycle.
+       â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */
+    if (cvt_pulse_timer > 0.0) {
+        cvt_pulse_timer -= fperiod;
+        if (!cvt_invert) {
+            cvt_increase = (cvt_dir ==  1) ? 1 : 0;
+            cvt_decrease = (cvt_dir == -1) ? 1 : 0;
+        } else {
+            cvt_increase = (cvt_dir == -1) ? 1 : 0;
+            cvt_decrease = (cvt_dir ==  1) ? 1 : 0;
+        }
+        if (cvt_pulse_timer <= 0.0) {
+            cvt_increase = 0;
+            cvt_decrease = 0;
+            cvt_dir      = 0;
+        }
+    } else {
+        cvt_increase = 0;
+        cvt_decrease = 0;
+    }
+    dbg_cvt_wait = cvt_gate_timer;
+
+    /* â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+       STATE 4: FAULT
+       â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */
+    if (state == 4) {
+        motor_cmd_rpm = 0.0;
+        fault         = 1;
+        closed_loop   = 0;
+        /* Release solenoids to safe state (disengage) */
+        apply_solenoid(0, &backgear_on, &backgear_off);
+        bg_state = 0;
+        if (!enable) {
+            state = 0;
+            fault = 0;
+        }
+        return;
+    }
+
+    /* â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+       STATE 0: IDLE
+       Solenoid held in current bg_state position.
+       â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */
+    if (state == 0) {
+        motor_cmd_rpm    = 0.0;
+        closed_loop      = 0;
+        fault            = 0;
+        integrator       = 0.0;
+        cvt_pulse_timer  = 0.0;
+        cvt_gate_timer   = cvt_settle_time;
+        cvt_dir          = 0;
+        ratio_freeze_timer = 0.0;
+        ol_timer         = 0.0;
+        ol_stable_timer  = 0.0;
+        dbg_error_rpm    = 0.0;
+        dbg_integrator   = 0.0;
+        motor_hz_out     = 0.0;
+        dbg_ol_stable    = 0.0;
+        dbg_motor_hz_err = 0.0;
+        dbg_cvt_pulse_calc = 0.0;
+        active_kp        = kp / (ratio_filt + 0.001);
+        active_ki        = 0.0;
+
+        /* Hold solenoid in current gear state while idle */
+        apply_solenoid(bg_state, &backgear_on, &backgear_off);
+
+        if (enable_edge && cmd > 0.0) {
+            want_backgear = (cmd <= backgear_threshold) ? 1 : 0;
+            if (want_backgear != bg_state) {
+                /* Need gear change: enter CHECK_GEAR */
+                bg_state    = want_backgear;
+                state       = 1;
+                state_timer = 0.0;
+                apply_solenoid(bg_state, &backgear_on, &backgear_off);
+            } else {
+                /* Gear already correct: go straight to open loop */
+                state           = 2;
+                ol_timer        = 0.0;
+                ol_stable_timer = 0.0;
+            }
+        }
+        return;
+    }
+
+    /* â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+       STATE 1: CHECK_GEAR
+       Hold solenoid for bg_engage_time, then open loop.
+       â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */
+    if (state == 1) {
+        motor_cmd_rpm = 0.0;
+        closed_loop   = 0;
+        dbg_ol_stable = 0.0;
+        apply_solenoid(bg_state, &backgear_on, &backgear_off);
+
+        if (!enable) {
+            /* Cancelled: restore to previous gear */
+            bg_state = want_backgear ? 0 : 1;
+            apply_solenoid(bg_state, &backgear_on, &backgear_off);
+            state = 0;
+            return;
+        }
+        state_timer += fperiod;
+        if (state_timer >= bg_engage_time) {
+            state           = 2;
+            ol_timer        = 0.0;
+            ol_stable_timer = 0.0;
+        }
+        return;
+    }
+
+    /* â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+       STATE 2: OPEN LOOP
+       Run at startup_hz, measure ratio, verify backgear.
+       â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */
+    if (state == 2) {
+        ol_timer += fperiod;
+
+        float ol_motor_rpm = startup_hz * motor_rpm_per_hz;
+        motor_cmd_rpm = ol_motor_rpm;
+        closed_loop   = 0;
+        motor_hz_out  = startup_hz;
+        dbg_error_rpm = cmd - fb_abs;
+        apply_solenoid(bg_state, &backgear_on, &backgear_off);
+
+        if (fb_abs > 2.0 && fb_vel < ol_stable_band)
+            ol_stable_timer += fperiod;
+        else
+            ol_stable_timer = 0.0;
+        dbg_ol_stable = ol_stable_timer;
+
+        /* Ratio measurement from known open-loop motor speed */
+        if (fb_abs > 2.0
+            && fb_abs < (ol_motor_rpm / ratio_min)
+            && fb_abs > (ol_motor_rpm / ratio_max)) {
+            float r = ol_motor_rpm / (fb_abs + 0.001);
+            if (r > ratio_min && r < ratio_max)
+                ratio_filt = ratio_filt * 0.80 + r * 0.20;
+        }
+        ratio_out = ratio_filt;
+        active_kp = kp / (ratio_filt + 0.001);
+        active_ki = 0.0;
+
+        if (!enable) { state = 0; return; }
+
+        int stable  = (ol_stable_timer >= ol_stable_time) && (fb_abs > 2.0);
+        int timeout = (ol_timer >= ol_max_time);
+
+        if (stable || timeout) {
+            /* Verify backgear was actually engaged */
+            if (want_backgear && ratio_filt < backgear_ratio_min) {
+                motor_cmd_rpm = 0.0;
+                bg_state      = 0;   /* reset: assume high gear */
+                state         = 4;
+                return;
+            }
+            /* Clamp ratio so first CL demand stays within VFD range */
+            if (cmd > 0.001) {
+                float ratio_max_safe = max_motor_rpm / cmd;
+                if (ratio_filt > ratio_max_safe)
+                    ratio_filt = ratio_max_safe;
+            }
+            integrator         = 0.0;
+            cvt_gate_timer     = cvt_settle_time;
+            cvt_dir            = 0;
+            ratio_freeze_timer = 0.0;
+            state              = 3;
+        }
+        return;
+    }
+
+    /* â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+       STATE 3: CLOSED LOOP
+       â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */
+    if (state == 3) {
+        closed_loop  = 1;
+        apply_solenoid(bg_state, &backgear_on, &backgear_off);
+
+        if (!enable) { state = 0; return; }
+
+        /* Ratio learning: frozen after CVT pulse, gated on saturation */
+        if (ratio_freeze_timer <= 0.0) {
+            int can_learn =
+                (fb_abs > 5.0) &&
+                (motor_cmd_rpm < max_motor_rpm * 0.95) &&
+                (motor_cmd_rpm > min_motor_rpm * 1.05) &&
+                (cvt_pulse_timer <= 0.0);
+
+            if (can_learn) {
+                float r = motor_cmd_rpm / (fb_abs + 0.001);
+                if (r > ratio_min && r < ratio_max)
+                    ratio_filt = ratio_filt * (1.0 - ratio_alpha)
+                               + r * ratio_alpha;
+            }
+        }
+        ratio_out = ratio_filt;
+
+        /* Gain scheduling */
+        float sched_kp = kp / (ratio_filt + 0.001);
+        float sched_ki = ki / (ratio_filt + 0.001);
+        active_kp = sched_kp;
+        active_ki = sched_ki;
+
+        /* PI: deadband halved during CVT freeze for faster response */
+        float error = cmd - fb_abs;
+        dbg_error_rpm = error;
+
+        float active_db = (ratio_freeze_timer > 0.0) ?
+                          deadband_rpm * 0.5 : deadband_rpm;
+        float e_db;
+        if      (error >  active_db) e_db = error - active_db;
+        else if (error < -active_db) e_db = error + active_db;
+        else                         e_db = 0.0;
+
+        /* Integrator clamped in effective correction units */
+        float i_clamp = max_i_error * (ratio_filt + 0.001) / (ki + 0.001);
+        integrator += e_db * fperiod;
+        if (integrator >  i_clamp) integrator =  i_clamp;
+        if (integrator < -i_clamp) integrator = -i_clamp;
+        dbg_integrator = integrator;
+
+        float correction = sched_kp * e_db + sched_ki * integrator;
+        float demand     = (cmd + correction) * ratio_filt;
+
+        if (demand > max_motor_rpm) {
+            demand = max_motor_rpm;
+            if (e_db > 0.0) integrator -= e_db * fperiod;
+        }
+        if (demand > 0.0 && demand < min_motor_rpm) demand = min_motor_rpm;
+        if (demand < 0.0) demand = 0.0;
+
+        motor_cmd_rpm = demand;
+        float motor_hz = demand / motor_rpm_per_hz;
+        motor_hz_out  = motor_hz;
+
+        float hz_err = motor_hz - cvt_target_hz;
+        dbg_motor_hz_err = hz_err;
+
+        /* CVT targeting */
+        float active_band = bg_state ? cvt_hz_band_bg : cvt_hz_band;
+
+        /* Unclamped Hz: what frequency at current ratio achieves cmd_rpm */
+        float unclamped_hz = (cmd * ratio_filt) / (motor_rpm_per_hz + 0.001);
+        float u_hz_err     = unclamped_hz - cvt_target_hz;
+
+        if (cvt_pulse_timer <= 0.0 && fb_abs > 10.0 && cmd > 0.0) {
+            int want_inc = 0;
+            int want_dec = 0;
+
+            /* 5ms debounce â€” prevents contact bounce spurious pulses */
+            if (panel_cvt_increase) panel_inc_count++;
+            else                    panel_inc_count = 0;
+            if (panel_cvt_decrease) panel_dec_count++;
+            else                    panel_dec_count = 0;
+            int inc_edge = (panel_inc_count == 5);
+            int dec_edge = (panel_dec_count == 5);
+
+            if (inc_edge) {
+                want_inc = 1;
+            } else if (dec_edge) {
+                want_dec = 1;
+            } else if (cvt_gate_timer <= 0.0 && !spindle_reverse) {
+                int at_max    = (motor_hz >= vfd_max_hz - 1.0);
+                int at_min    = (motor_hz <= vfd_min_hz + 1.0);
+                int short_rpm = (cmd - fb_abs > deadband_rpm);
+                int over_rpm  = (fb_abs - cmd > deadband_rpm);
+
+                if ((hz_err > active_band && !at_max) ||
+                    (at_max && short_rpm))
+                    want_inc = 1;
+                else if ((hz_err < -active_band && !at_min && !short_rpm) ||
+                         (at_min && over_rpm))
+                    want_dec = 1;
+            }
+
+            if (want_inc || want_dec) {
+                float abs_u = u_hz_err < 0.0 ? -u_hz_err : u_hz_err;
+                float calc  = abs_u / (cvt_hz_per_sec + 0.001);
+                if (calc < cvt_pulse_min) calc = cvt_pulse_min;
+                if (calc > cvt_pulse_max) calc = cvt_pulse_max;
+                dbg_cvt_pulse_calc = calc;
+                cvt_dir            = want_inc ? 1 : -1;
+                cvt_pulse_timer    = calc;
+                cvt_gate_timer     = ratio_gate_time;
+                ratio_freeze_timer = ratio_freeze_time;
+            }
+        }
+
+        last_panel_inc = panel_cvt_increase;
+        last_panel_dec = panel_cvt_decrease;
+        return;
+    }
+}
+

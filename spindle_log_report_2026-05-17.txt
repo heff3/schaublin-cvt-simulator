@@ -1,0 +1,218 @@
+
+======================================================================
+  SPINDLE SUPERVISOR TUNING DIAGNOSTICS
+======================================================================
+
+── A. RATIO FILTER HEALTH ───────────────────────────────────────────
+  Closed-loop samples        : 116712
+  Learning enabled           :  26155  (22.4%)
+  Blocked — ratio freeze     :  69194  (59.3%)
+  Blocked — CVT pulse active :  24859  (21.3%)
+  Blocked — VFD saturated    :  22670  (19.4%)
+  Blocked — fb_vel too high  : 116712  (100.0%)
+
+  fb_vel percentiles (gate = 15 RPM/s):
+  p1=139  p5=244  p25=798  p50=1602  p75=2977  p95=4098  p99=4523
+  Fraction of time below gate: 0.0%
+
+  *** GATE TOO TIGHT — learning blocked almost entirely ***
+  Suggested OL_STABLE_BAND = 801  (gate would be 2402 RPM/s, above p50)
+
+  Large ratio step events (|Δratio| > 0.1 in one sample):
+  Count: 495
+  Time   From   To     Δ      fb     hz    fb_vel   freeze  Note                
+   146.0  0.971  7.989  7.018     37  37.9      446    0.00 *** CORRUPT
+   146.0  7.989  8.440  0.451     37  39.9      442    0.00 gate should block
+   146.0  8.440  8.898  0.458     38  41.9      447    0.00 gate should block
+   146.0  8.898  9.391  0.492     38  44.2      449    0.00 gate should block
+   146.0  9.391  9.909  0.518     38  46.5      444    0.00 *** CORRUPT
+   146.0  9.909 10.464  0.555     37  49.0      445    0.00 *** CORRUPT
+   146.0 10.464 11.029  0.565     38  51.5      450    0.00 *** CORRUPT
+   146.0 11.029 11.634  0.605     37  54.2      451    0.00 *** CORRUPT
+   146.0 11.634 12.276  0.641     37  57.1      448    0.00 *** CORRUPT
+   146.0 12.276 12.957  0.681     37  60.1      446    0.00 *** CORRUPT
+   146.0 12.957 13.649  0.692     38  63.2      451    0.00 *** CORRUPT
+   146.0 13.649 14.390  0.741     37  66.5      452    0.00 *** CORRUPT
+   146.0 14.390 15.176  0.786     37  70.0      450    0.00 *** CORRUPT
+   146.7 15.176 15.070  0.106    202  66.0      836    0.00 gate should block
+   146.7 15.070 14.964  0.105    202  65.6      829    0.00 gate should block
+  ... and 480 more
+
+── B. PI SATURATION MAP ─────────────────────────────────────────────
+  Cmd    Gear N       AtMax%  AtMin%  Short%  Over%   OnTgt%  HzMean  RatMean 
+  ------ ---- ------  ------- ------- ------- ------- ------- ------- --------
+      50 BG    11399      0.0   100.0     0.0     0.9    99.1    10.0    5.411
+     150 BG    23751      0.6    11.0     8.3    65.6    26.1    43.9   10.842
+     350 HG    27051      0.0     5.7    32.3    47.6    20.1    33.8    3.255
+     650 HG    31160     10.6     2.3    56.2    38.0     5.8    41.7    2.247
+    1350 HG    23348     12.7     0.0    40.8    46.3    12.9    45.7    1.355
+
+  AtMax%: time at VFD max Hz — CVT increase needed if spindle short
+  Short%: time spindle below cmd by >deadband
+  OnTgt%: time within deadband  (goal: >80%)
+
+── B2. EVENT TIMELINE ───────────────────────────────────────────────
+  Time    Type      Detail
+  ------- --------- -------------------------------------------------------
+     55.4  ▶ START    cmd=335 RPM  ratio=1.446
+     59.4  ● CVT-MAN  dec  dur=1.18s  ΔHz=-1.0  ratio=2.369
+     63.4  ● CVT-MAN  dec  dur=1.22s  ΔHz=+1.1  ratio=2.286
+     67.6  ● CVT-MAN  inc  dur=0.25s  ΔHz=-0.6  ratio=4.936
+     71.6  ● CVT-MAN  inc  dur=0.81s  ΔHz=-13.7  ratio=5.933
+     75.6  ● CVT-MAN  dec  dur=1.78s  ΔHz=+7.2  ratio=1.286
+     79.6  ● CVT-MAN  dec  dur=0.14s  ΔHz=-0.9  ratio=4.221
+     82.4  → SPEED    335 → 0 RPM
+     82.4  → SPEED    0 → 670 RPM
+     83.6  ● CVT-MAN  inc  dur=2.21s  ΔHz=-2.5  ratio=4.221
+     87.6  ● CVT-MAN  inc  dur=0.96s  ΔHz=-22.3  ratio=3.096
+     91.6  ● CVT-MAN  dec  dur=1.31s  ΔHz=+13.6  ratio=1.062
+     95.6  ● CVT-MAN  dec  dur=1.01s  ΔHz=+7.1  ratio=1.332
+     99.6  ● CVT-MAN  dec  dur=0.23s  ΔHz=+5.1  ratio=2.030
+    105.4  → SPEED    670 → 1340 RPM
+    105.4  ● CVT-MAN  inc  dur=2.72s  ΔHz=+0.0  ratio=2.336
+    109.4  ● CVT-MAN  inc  dur=2.72s  ΔHz=-18.4  ratio=2.336
+    113.6  ● CVT-MAN  dec  dur=0.82s  ΔHz=-1.6  ratio=0.754
+    117.7  ● CVT-MAN  dec  dur=0.92s  ΔHz=+5.5  ratio=0.706
+    121.7  ● CVT-MAN  dec  dur=0.10s  ΔHz=+1.5  ratio=1.157
+    128.7  → SPEED    1340 → 670 RPM
+    128.7  ● CVT-MAN  dec  dur=1.38s  ΔHz=+25.2  ratio=1.003
+    132.7  ● CVT-MAN  inc  dur=0.82s  ΔHz=-13.8  ratio=2.975
+    136.9  → SPEED    670 → 0 RPM
+    136.9  ■ STOP     
+    136.7  ● CVT-MAN  dec  dur=0.20s  ΔHz=-11.3  ratio=0.971
+    146.0  ▶ START    cmd=134 RPM  ratio=7.989
+    146.0  R RATIO    0.971→15.176  (197 steps, range 0.971–15.176)
+    150.0  ● CVT-MAN  inc  dur=0.46s  ΔHz=-3.7  ratio=13.268
+    153.0  R RATIO    13.268→14.980  (71 steps, range 6.118–14.980)
+    154.0  ● CVT-MAN  inc  dur=0.59s  ΔHz=-3.5  ratio=13.856
+    157.0  R RATIO    13.856→15.083  (97 steps, range 5.793–15.083)
+    158.0  ● CVT-MAN  inc  dur=0.87s  ΔHz=-7.4  ratio=15.083
+    161.0  R RATIO    15.083→14.864  (70 steps, range 6.352–14.864)
+    162.0  ● CVT-MAN  inc  dur=0.91s  ΔHz=-11.8  ratio=15.266
+    165.0  R RATIO    15.266→15.026  (60 steps, range 5.670–15.026)
+    166.0  ● CVT-MAN  dec  dur=1.24s  ΔHz=-0.5  ratio=5.640
+    169.7  → SPEED    134 → 67 RPM
+    181.1  → SPEED    67 → 0 RPM
+    181.1  ■ STOP     
+
+  Summary: 2 spindle start(s)  0 auto CVT  24 manual CVT  495 ratio change(s)  (11 corrupt)
+
+── C. SPEED SETTLING ────────────────────────────────────────────────
+  Time   From   To     Settle      Note
+  ------ ------ ------ ----------  --------------------
+   128.7   1350    650 TIMEOUT >40s  *** did not settle
+   169.7    150     50      0.13s
+
+  Settled steps  : 1 / 2
+  Settle time    : mean=0.13s  min=0.13s  max=0.13s
+
+── D. CVT PULSE AUDIT ───────────────────────────────────────────────
+  Total pulses: 24   Stalled (|ΔHz|<1): 3   Wrong direction: 5
+
+  Time   Dir Cmd   Dur   ΔHz     ΔRatio   Hz/sec  Result    
+  ------ --- ----- ----- ------- -------- ------- ----------
+    59.4 dec   335  1.18   -1.51   -0.083     1.3 WRONG     
+    63.4 dec   335  1.22   +3.84   +0.283     3.1 ok        
+    67.6 inc   335  0.25  +11.51   +0.997    45.1 WRONG     
+    71.6 inc   335  0.81  -56.70   -4.647    69.8 ok        
+    75.6 dec   335  1.78  +41.22   +3.480    23.1 ok        
+    79.6 dec   335  0.14  +25.54   +0.000   178.6 ok        
+    83.6 inc   670  2.21   -3.63   -1.125     1.6 ok        
+    87.6 inc   670  0.96  -55.72   -2.034    58.2 ok        
+    91.6 dec   670  1.31  +14.75   +0.270    11.2 ok        
+    95.6 dec   670  1.01  +14.91   +0.698    14.7 ok        
+    99.6 dec   670  0.23  +10.78   +0.333    46.5 ok        
+   105.4 inc  1340  2.72   -3.19   +0.000     1.2 ok        
+   109.4 inc  1340  2.72  -45.05   -1.875    16.6 ok        
+   113.6 dec  1340  0.82   +0.07   -0.038     0.1 STALL     
+   117.7 dec  1340  0.92  +20.28   +0.541    22.0 ok        
+   121.7 dec  1340  0.10   -1.14   -0.147    11.5 WRONG     
+   128.7 dec   670  1.38  +64.35   +1.972    46.7 ok        
+   132.7 inc   670  0.82  -52.03   -2.004    63.3 ok        
+   136.7 dec   670  0.20   -1.29   +7.025     6.6 ok        
+   150.0 inc   134  0.46   +0.78   +0.589     1.7 STALL     
+   154.0 inc   134  0.59   +5.80   +1.227     9.8 WRONG     
+   158.0 inc   134  0.87   +0.71   +0.183     0.8 STALL     
+   162.0 inc   134  0.91  -46.94  -10.327    51.6 ok        
+   166.0 dec   134  1.24  -13.20   -0.230    10.6 WRONG     
+
+  CVT_HZ_PER_SEC (non-stall pulses >0.2s):  mean=27.6  min=1.2  max=69.8
+  Recommended: CVT_HZ_PER_SEC = 27.6
+
+── E. LIMIT CYCLE DETECTION ─────────────────────────────────────────
+  S350: oscillation detected
+    Duration   : 27.0s
+    Error range: 588 RPM    Hz range: 57.5 Hz
+    Period     : ~0.31s
+    Mean ratio : 3.255    Mean Hz: 33.8
+    sched_kp   : 0.31    i_clamp: 6667 RPM·s
+    LIKELY CAUSE: ratio filter corruption
+    FIX:  Check ratio step events in Section A
+
+  S650: oscillation detected
+    Duration   : 23.0s
+    Error range: 1108 RPM    Hz range: 59.7 Hz
+    Period     : ~1.35s
+    Mean ratio : 2.358    Mean Hz: 43.7
+    sched_kp   : 0.42    i_clamp: 6667 RPM·s
+    LIKELY CAUSE: ratio filter corruption
+    FIX:  Check ratio step events in Section A
+
+  S1350: oscillation detected
+    Duration   : 23.3s
+    Error range: 2203 RPM    Hz range: 52.6 Hz
+    Period     : ~0.17s
+    Mean ratio : 1.355    Mean Hz: 45.7
+    sched_kp   : 0.74    i_clamp: 6667 RPM·s
+    LIKELY CAUSE: ratio filter corruption
+    FIX:  Check ratio step events in Section A
+
+  S650: oscillation detected
+    Duration   : 8.2s
+    Error range: 898 RPM    Hz range: 67.7 Hz
+    Period     : ~1.26s
+    Mean ratio : 1.937    Mean Hz: 36.4
+    sched_kp   : 0.52    i_clamp: 6667 RPM·s
+    LIKELY CAUSE: ratio filter corruption
+    FIX:  Check ratio step events in Section A
+
+  S150: oscillation detected
+    Duration   : 23.8s
+    Error range: 466 RPM    Hz range: 60.0 Hz
+    Period     : ~0.09s
+    Mean ratio : 10.842    Mean Hz: 43.9
+    sched_kp   : 0.09    i_clamp: 6667 RPM·s
+    LIKELY CAUSE: ratio filter corruption
+    FIX:  Check ratio step events in Section A
+
+  S50: oscillation detected
+    Duration   : 11.4s
+    Error range: 75 RPM    Hz range: 0.0 Hz
+    Mean ratio : 5.411    Mean Hz: 10.0
+    sched_kp   : 0.18    i_clamp: 6667 RPM·s
+    LIKELY CAUSE: VFD saturated at min — ratio too low
+    FIX:  RATIO_MIN cap or CVT decrease needed
+
+
+── F. PARAMETER RECOMMENDATIONS ─────────────────────────────────────
+  OL_STABLE_BAND (current)  : 5  → gate = 15 RPM/s
+  fb_vel  p50 / p95         : 1602 / 4098 RPM/s
+  Ratio learning active     : 22.4% of CL time
+
+  *** WARNING: ratio learning active only 22% of time
+  Suggested OL_STABLE_BAND  = 801
+
+  Integrator clamp          : ±6667 RPM·s  (MAX_I_ERROR=200 / KI=0.030)
+  Peak integrator seen      : 9095 RPM·s
+  *** Integrator hitting clamp — anti-windup active
+
+  High gear ratio range     : 0.441 – 6.109
+  Backgear ratio range      : 2.348 – 15.266
+  Recommended BACKGEAR_RATIO_MIN = 4.23
+
+  Peak fb_rpm seen          : 2831 RPM
+
+======================================================================
+  Run with --report calibration for CVT Hz/sec measurement
+======================================================================
+
