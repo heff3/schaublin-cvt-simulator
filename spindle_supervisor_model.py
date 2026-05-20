@@ -471,8 +471,10 @@ class SpindleSupervisorModel:
             )
 
         if state.ratio_freeze_timer <= 0.0:
+            learning_fb_vel_gate = params.ol_stable_band * 3.0
             can_learn = (
                 fb_abs > 5.0
+                and state.fb_vel < learning_fb_vel_gate
                 and previous_motor_cmd_rpm < max_motor_rpm * 0.95
                 and previous_motor_cmd_rpm > min_motor_rpm * 1.05
                 and state.cvt_pulse_timer <= 0.0

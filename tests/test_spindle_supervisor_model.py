@@ -12,7 +12,7 @@ def load_model(state: SupervisorState | None = None) -> SpindleSupervisorModel:
     return SpindleSupervisorModel(params=params, state=state)
 
 
-def test_closed_loop_ratio_learning_ignores_high_feedback_velocity():
+def test_closed_loop_ratio_learning_blocks_high_feedback_velocity():
     model = load_model(
         SupervisorState(
             state=3,
@@ -33,8 +33,8 @@ def test_closed_loop_ratio_learning_ignores_high_feedback_velocity():
         dt=0.001,
     )
 
-    assert model.state.fb_vel > model.params.ol_stable_band
-    assert outputs.ratio_out > 1.0
+    assert model.state.fb_vel > model.params.ol_stable_band * 3.0
+    assert outputs.ratio_out == 1.0
 
 
 def test_open_loop_stability_timer_resets_under_default_band_with_fast_feedback_change():
