@@ -25,6 +25,7 @@ STATE_NAMES = {
 SPARK_CHARS = " .:-=+*#%@"
 DEFAULT_INI_PATH = Path(__file__).resolve().with_name("schaublin_125-CNC_2026-05-17-2.ini")
 DEFAULT_HISTORY_LIMIT = 5000
+MANUAL_CVT_BUTTON_TICKS = 5
 
 
 @dataclass(frozen=True)
@@ -56,8 +57,8 @@ class OperatorPanelState:
     cvt_invert: bool = False
     gear_init: bool = False
     _backgear_pulse: bool = False
-    _cvt_increase_pulse: bool = False
-    _cvt_decrease_pulse: bool = False
+    _cvt_increase_ticks: int = 0
+    _cvt_decrease_ticks: int = 0
 
     def clamp(self, max_spindle_rpm: float) -> None:
         self.cmd_rpm = max(0.0, min(self.cmd_rpm, max_spindle_rpm))
@@ -66,26 +67,30 @@ class OperatorPanelState:
         self._backgear_pulse = True
 
     def pulse_cvt_increase(self) -> None:
-        self._cvt_increase_pulse = True
+        self._cvt_increase_ticks = max(self._cvt_increase_ticks, MANUAL_CVT_BUTTON_TICKS)
+        self._cvt_decrease_ticks = 0
 
     def pulse_cvt_decrease(self) -> None:
-        self._cvt_decrease_pulse = True
+        self._cvt_decrease_ticks = max(self._cvt_decrease_ticks, MANUAL_CVT_BUTTON_TICKS)
+        self._cvt_increase_ticks = 0
 
     def next_command(self) -> SimulationCommand:
+        cvt_increase = self._cvt_increase_ticks > 0
+        cvt_decrease = self._cvt_decrease_ticks > 0
         command = SimulationCommand(
             cmd_rpm=self.cmd_rpm,
             enable=self.enable,
             brake=self.brake,
             spindle_reverse=self.spindle_reverse,
             panel_backgear_btn=self._backgear_pulse,
-            panel_cvt_increase=self._cvt_increase_pulse,
-            panel_cvt_decrease=self._cvt_decrease_pulse,
+            panel_cvt_increase=cvt_increase,
+            panel_cvt_decrease=cvt_decrease,
             cvt_invert=self.cvt_invert,
             gear_init=self.gear_init,
         )
         self._backgear_pulse = False
-        self._cvt_increase_pulse = False
-        self._cvt_decrease_pulse = False
+        self._cvt_increase_ticks = max(0, self._cvt_increase_ticks - 1)
+        self._cvt_decrease_ticks = max(0, self._cvt_decrease_ticks - 1)
         return command
 
 
@@ -303,7 +308,7 @@ class InteractiveSimulationApp:
         self._draw_line(
             screen,
             1,
-            "keys: q quit | space enable | p pause | n step | j/k +/-10 rpm | J/K +/-100 rpm | b backgear | i/d cvt +/-",
+            "keys: q quit | space enable | p pause | n step | j/k +/-10 rpm | J/K +/-100 rpm | b backgear | i/d cvt +/- (held 5 ticks)",
         )
         self._draw_line(
             screen,
