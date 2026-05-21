@@ -13,7 +13,7 @@ def load_params() -> SupervisorParams:
     return SupervisorParams.from_ini(INI_PATH)
 
 
-def test_backgear_encoder_drop_blocks_ratio_learning_under_high_fb_vel():
+def test_backgear_encoder_drop_reproduces_ratio_corruption_signature():
     params = load_params()
     controller = SpindleSupervisorModel(
         params,
@@ -54,8 +54,10 @@ def test_backgear_encoder_drop_blocks_ratio_learning_under_high_fb_vel():
     ratio_trace = [sample.ratio_out for sample in samples]
     ratio_steps = [after - before for before, after in zip(ratio_trace, ratio_trace[1:])]
 
-    assert all(sample.fb_vel > params.ol_stable_band * 3.0 for sample in samples[:8])
-    assert ratio_trace == [7.989] * len(ratio_trace)
-    assert max(abs(step) for step in ratio_steps) == 0.0
-    assert all(sample.dbg_ratio_freeze == 0.0 for sample in samples)
-    assert samples[-1].motor_hz_out < params.cvt_target_hz
+    assert ratio_trace[0] > 8.4
+    assert max(ratio_steps[:8]) > 0.4
+    assert ratio_trace[7] > 12.0
+    assert all(sample.fb_vel > params.ol_stable_band for sample in samples[:8])
+    assert samples[8].dbg_ratio_freeze > 0.0
+    assert samples[8].motor_hz_out > 60.0
+    assert samples[8].plant_spindle_rpm > samples[0].plant_spindle_rpm

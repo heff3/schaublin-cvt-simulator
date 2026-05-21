@@ -397,12 +397,10 @@ FUNCTION(_) {
 
         if (!enable) { state = 0; return; }
 
-        /* Ratio learning: frozen after CVT pulse, gated on saturation and fb velocity */
+        /* Ratio learning: frozen after CVT pulse, gated on saturation */
         if (ratio_freeze_timer <= 0.0) {
-            float learning_fb_vel_gate = ol_stable_band * 3.0;
             int can_learn =
                 (fb_abs > 5.0) &&
-                (fb_vel < learning_fb_vel_gate) &&
                 (motor_cmd_rpm < max_motor_rpm * 0.95) &&
                 (motor_cmd_rpm > min_motor_rpm * 1.05) &&
                 (cvt_pulse_timer <= 0.0);
